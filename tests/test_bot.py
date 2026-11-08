@@ -37,6 +37,35 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, 'allowed', return_value=permitted):
             await modal.on_submit(self.interaction)
 
+    def test_panel_role_configuration(self):
+        self.assertEqual(bot.parse_panel_roles('456', 123), {456})
+        self.assertEqual(bot.parse_panel_roles('456, 789', 123), {456, 789})
+        for value in ('', '456,', ',456', '456,abc', '456,789,111', '0', '456,123', '-1'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                bot.parse_panel_roles(value, 123)
+
+    async def test_either_role_grants_access_and_is_protected(self):
+        with patch.object(bot, 'ROLE_IDS', {456, 789}), patch.object(bot.discord, 'Member', SimpleNamespace):
+            for role_id in (456, 789):
+                self.interaction.user.roles = [Role(role_id, 1)]
+                self.assertTrue(bot.allowed(self.interaction))
+                self.member.roles = [Role(role_id, 1)]
+                await self.submit('kick')
+                self.member.kick.assert_not_awaited()
+                self.assertFalse(bot.safe_punishment_role(self.guild, Role(role_id, 2), self.me, self.actor))
+            self.interaction.user.roles = [Role(111, 1)]
+            self.assertFalse(bot.allowed(self.interaction))
+
+    async def test_reminders_stop_for_second_authorized_role(self):
+        bot.REMINDERS.clear()
+        bot.LAST_REMINDER_SENT.clear()
+        await self.submit('reminder_start', extra='1')
+        author = SimpleNamespace(id=2, bot=False, roles=[Role(789, 1)], send=AsyncMock())
+        with patch.object(bot, 'ROLE_IDS', {456, 789}):
+            await bot.on_message(SimpleNamespace(guild=self.guild, author=author))
+        self.assertNotIn(2, bot.REMINDERS)
+        author.send.assert_not_awaited()
+
     async def test_all_actions(self):
         for kind in bot.PERMISSIONS:
             if kind in ('reminder_start', 'reminder_stop'): continue
