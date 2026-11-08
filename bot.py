@@ -10,7 +10,17 @@ from discord.ext import commands
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ['DISCORD_TOKEN']
 GUILD_ID = int(os.environ['GUILD_ID'])
-ROLE_ID = int(os.environ['PANEL_ROLE_ID'])
+def parse_panel_roles(value, guild_id):
+    parts = [part.strip() for part in value.split(',')]
+    if not 1 <= len(parts) <= 2 or any(not part.isascii() or not part.isdecimal() for part in parts):
+        raise ValueError('PANEL_ROLE_ID doit contenir un ou deux IDs numériques séparés par une virgule.')
+    roles = {int(part) for part in parts}
+    if 0 in roles or guild_id in roles:
+        raise ValueError('PANEL_ROLE_ID doit contenir des IDs positifs et ne peut pas inclure @everyone.')
+    return roles
+
+
+ROLE_IDS = parse_panel_roles(os.environ['PANEL_ROLE_ID'], GUILD_ID)
 LOG_CHANNEL_ID = int(os.getenv('LOG_CHANNEL_ID') or '0')
 PUNISHMENT_ROLE_ID = int(os.getenv('PUNISHMENT_ROLE_ID') or '0')
 # Mémoire uniquement : remise à zéro au redémarrage du worker.
@@ -18,8 +28,6 @@ REMINDERS = {}
 LAST_REMINDER_SENT = {}
 REMINDER_INTERVAL = 60
 MAX_REMINDERS = 100
-if ROLE_ID == GUILD_ID:
-    raise ValueError('PANEL_ROLE_ID ne peut pas être le rôle @everyone.')
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
@@ -28,7 +36,7 @@ bot = commands.Bot(command_prefix=commands.when_mentioned, intents=intents)
 def allowed(interaction):
     return (interaction.guild is not None and interaction.guild.id == GUILD_ID
             and isinstance(interaction.user, discord.Member)
-            and any(role.id == ROLE_ID for role in interaction.user.roles))
+            and any(role.id in ROLE_IDS for role in interaction.user.roles))
 
 
 async def deny(interaction):
@@ -97,7 +105,7 @@ class SanctionModal(discord.ui.Modal):
                 member = await guild.fetch_member(target_id)
                 actor = interaction.user
                 if (member.id in (guild.owner_id, actor.id, bot.user.id)
-                        or any(role.id == ROLE_ID for role in member.roles)
+                        or any(role.id in ROLE_IDS for role in member.roles)
                         or member.top_role >= me.top_role
                         or (actor.id != guild.owner_id and member.top_role >= actor.top_role)):
                     return await interaction.followup.send('Action impossible : cible protégée ou hiérarchie des rôles insuffisante.', ephemeral=True)
@@ -160,7 +168,7 @@ class SanctionModal(discord.ui.Modal):
 
 # Le rôle de punition ne doit accorder aucun droit, y compris via les salons.
 def safe_punishment_role(guild, role, me, actor):
-    if (role is None or role.id in (guild.id, ROLE_ID) or role.managed
+    if (role is None or (role.id == guild.id or role.id in ROLE_IDS) or role.managed
             or role.permissions.value != 0 or role >= me.top_role
             or (actor.id != guild.owner_id and role >= actor.top_role)):
         return False
@@ -262,7 +270,7 @@ async def on_message(message):
     if reminder is None:
         return
     now = time.monotonic()
-    if reminder['expires'] <= now or message.author.id == message.guild.owner_id or any(role.id == ROLE_ID for role in message.author.roles):
+    if reminder['expires'] <= now or message.author.id == message.guild.owner_id or any(role.id in ROLE_IDS for role in message.author.roles):
         REMINDERS.pop(message.author.id, None)
         return
     # La limite reste appliquée même si un modérateur relance la punition.
